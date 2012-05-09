@@ -1,0 +1,12 @@
+@relation 'abalone'
+@attribute 'Sex' { M, F, I}
+@attribute 'Length' real
+@attribute 'Diameter' real
+@attribute 'Height' real
+@attribute 'Whole weight' real
+@attribute 'Shucked weight' real
+@attribute 'Viscera weight' real
+@attribute 'Shell weight' real
+@attribute 'Class_Rings' integer
+@data
+M,0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,?
