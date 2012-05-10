@@ -11,7 +11,9 @@ VERSION = (0, 1, 0)
 __version__ = '.'.join(map(str, VERSION))
 
 from subprocess import Popen, PIPE
+from collections import namedtuple
 import cPickle as pickle
+import gzip
 import math
 import os
 import re
@@ -34,31 +36,32 @@ for _cp in CP.split(':'):
 
 # http://weka.sourceforge.net/doc/weka/classifiers/Classifier.html
 WEKA_CLASSIFIERS = [
-'weka.classifiers.functions.LibSVM -K 0',
-'weka.classifiers.functions.LibSVM -K 1',
-'weka.classifiers.functions.LibSVM -K 2',
 'weka.classifiers.bayes.AODE',
 'weka.classifiers.bayes.BayesNet',
 'weka.classifiers.bayes.ComplementNaiveBayes',
 'weka.classifiers.bayes.NaiveBayes',
 'weka.classifiers.bayes.NaiveBayesMultinomial',
 'weka.classifiers.bayes.NaiveBayesSimple',
+'weka.classifiers.bayes.NaiveBayesUpdateable',
 'weka.classifiers.functions.LeastMedSq',
+'weka.classifiers.functions.LibSVM',
 'weka.classifiers.functions.LinearRegression',
 'weka.classifiers.functions.Logistic',
 'weka.classifiers.functions.MultilayerPerceptron',
 'weka.classifiers.functions.PaceRegression',
 'weka.classifiers.functions.RBFNetwork',
-'weka.classifiers.functions.SMO',
-'weka.classifiers.functions.SMOreg',
 'weka.classifiers.functions.SimpleLinearRegression',
 'weka.classifiers.functions.SimpleLogistic',
+'weka.classifiers.functions.SMO',
+'weka.classifiers.functions.SMOreg',
 'weka.classifiers.functions.VotedPerceptron',
 'weka.classifiers.functions.Winnow',
 'weka.classifiers.lazy.IB1', 
 'weka.classifiers.lazy.IBk',
 'weka.classifiers.lazy.KStar',
 'weka.classifiers.lazy.LBR',
+'weka.classifiers.lazy.LWL',
+'weka.classifiers.meta.RacedIncrementalLogitBoost',
 'weka.classifiers.misc.HyperPipes',
 'weka.classifiers.misc.VFI',
 'weka.classifiers.rules.ConjunctiveRule',
@@ -66,8 +69,8 @@ WEKA_CLASSIFIERS = [
 'weka.classifiers.rules.JRip',
 'weka.classifiers.rules.NNge',
 'weka.classifiers.rules.OneR',
-'weka.classifiers.rules.PART',
 'weka.classifiers.rules.Prism',
+'weka.classifiers.rules.PART',
 'weka.classifiers.rules.Ridor',
 'weka.classifiers.rules.ZeroR',
 'weka.classifiers.trees.ADTree',
@@ -76,8 +79,8 @@ WEKA_CLASSIFIERS = [
 'weka.classifiers.trees.J48',
 'weka.classifiers.trees.LMT',
 'weka.classifiers.trees.NBTree',
-'weka.classifiers.trees.REPTree',
 'weka.classifiers.trees.RandomForest',
+'weka.classifiers.trees.REPTree',
 ]
 
 class _Helper(object):
@@ -95,7 +98,7 @@ class _Helper(object):
     
     def load(self, fn, *args, **kwargs):
         args = list(self.args) + list(args)
-        kwargs.update(self.kwargs)
+        #kwargs.update(self.kwargs)
         return Classifier.load(fn, *args, **kwargs)
     
     def __repr__(self):
@@ -129,6 +132,7 @@ UPDATEABLE_WEKA_CLASSIFIERS = [
 'weka.classifiers.meta.RacedIncrementalLogitBoost',
 'weka.classifiers.functions.Winnow',
 ]
+UPDATEABLE_WEKA_CLASSIFIER_NAMES = set(_.split('.')[-1] for _ in UPDATEABLE_WEKA_CLASSIFIERS)
 
 WEKA_ACCURACY_REGEX = re.compile('===\s+Stratified cross-validation\s+===' + \
     '\n+\s*\n+\s*Correctly Classified Instances\s+[0-9]+\s+([0-9\.]+)\s+%',
@@ -136,6 +140,8 @@ WEKA_ACCURACY_REGEX = re.compile('===\s+Stratified cross-validation\s+===' + \
 WEKA_TEST_ACCURACY_REGEX = re.compile('===\s+Error on test data\s+===\n+\s' + \
     '*\n+\s*Correctly Classified Instances\s+[0-9]+\s+([0-9\.]+)\s+%',
     re.DOTALL)
+
+PredictionResult = namedtuple('PredictionResult', ['actual', 'predicted', 'probability'])
 
 def get_weka_accuracy(arff_fn, arff_test_fn, cls):
     assert cls in WEKA_CLASSIFIERS, "Unknown Weka classifier: %s" % (cls,)
@@ -170,11 +176,14 @@ class Classifier(object):
         self.ckargs = ckargs
 
     @classmethod
-    def load(cls, fn, *args, **kwargs):
-        if os.path.isfile(fn):
-            return pickle.load(open(fn,'rb'))
+    def load(cls, fn, compress=True, *args, **kwargs):
+        if compress and not fn.strip().lower().endswith('.gz'):
+            fn = fn + '.gz'
+        assert os.path.isfile(fn), 'File %s does not exist.' % (fn,)
+        if compress:
+            return pickle.load(gzip.open(fn, 'rb'))
         else:
-            return cls(*args, **kwargs)
+            return pickle.load(open(fn, 'rb'))
 
     @classmethod
     def load_raw(cls, model_fn, schema, *args, **kwargs):
@@ -188,8 +197,13 @@ class Classifier(object):
         c._model_data = open(model_fn,'rb').read()
         return c
         
-    def save(self, fn):
-        pickle.dump(self, open(fn,'wb'))
+    def save(self, fn, compress=True):
+        if compress and not fn.strip().lower().endswith('.gz'):
+            fn = fn + '.gz'
+        if compress:
+            pickle.dump(self, gzip.open(fn, 'wb'))
+        else:
+            pickle.dump(self, open(fn,'wb'))
         
     def _get_ckargs_str(self):
         ckargs = []
@@ -291,6 +305,9 @@ class Classifier(object):
         """
         Iterates over the predicted values and probability (if supported).
         Each iteration yields a tuple of the form (prediction, probability).
+        
+        If the file is a test file (i.e. contains no query variables),
+        then the tuple will be of the form (prediction, actual).
         """
         model_fn = None
         query_fn = None
@@ -311,7 +328,8 @@ class Classifier(object):
                 
             # Validate model file.
             model_fn = tempfile.mkstemp()[1]
-            assert self._model_data, "You must train this classifier before predicting."
+            assert self._model_data, \
+                "You must train this classifier before predicting."
             fout = open(model_fn,'wb')
             fout.write(self._model_data)
             fout.close()
@@ -325,7 +343,8 @@ class Classifier(object):
                         distribution=('-distribution' if distribution else ''),
                         )
             cmd = "java -cp %(CP)s %(classifier_name)s -p 0 %(distribution)s -l \"%(model_fn)s\" -T \"%(query_fn)s\"" % args
-            if verbose: print cmd
+            if verbose:
+                print cmd
             p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
             stdout_str = stdout.read()
@@ -342,8 +361,16 @@ class Classifier(object):
                 # inst#     actual  predicted error prediction
                 #header = 'inst,actual,predicted,error'.split(',')
                 query = arff.ArffFile.load(query_fn)
-                query_variables = [query.attributes[i] for i,v in enumerate(query.data[0]) if v == arff.MISSING]
-                assert query_variables, "There must be at least one query variable in the query."
+                query_variables = [
+                    query.attributes[i]
+                    for i,v in enumerate(query.data[0])
+                    if v == arff.MISSING]
+                if not query_variables:
+                    query_variables = [query.attributes[-1]]
+#                assert query_variables, \
+#                    "There must be at least one query variable in the query."
+                if verbose:
+                    print 'query_variables:',query_variables
                 header = 'predicted'.split(',')
                 # sample line:     1        1:?       4:36   +   1
                 
@@ -364,12 +391,21 @@ class Classifier(object):
                 # inst#     actual  predicted error distribution
                 #     1        1:? 11:Acer_tr   +   0,0,0,0,0,0,0,0,0,0,*1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
                 
-                # Check for distribution output.
+#                if re.findall('inst#\s+actual\s+predicted\s+error', stdout_str):
+#                    # Check for test output.
+#                    matches = re.findall("\s*([0-9\.]+)\s+([0-9\.]+)\s+([0-9\.]+)\s+([0-9\.]+)", stdout_str)
+#                    assert matches, "No results found matching test pattern in stdout: %s" % stdout_str
+#                    for match in matches:
+#                        inst, actual, predicted, error = match
+#                        yield predicted, actual
                 if re.findall('error\s+distribution', stdout_str):
-                    matches = re.findall("\s*[0-9\.]+\s+[a-zA-Z0-9\.\?\:]+\s+([a-zA-Z0-9_\.\?\:]+)\s+\+\s+([a-zA-Z0-9\.\?\,\*]+)", stdout_str)
+                    # Check for distribution output.
+                    matches = re.findall(
+                        "^\s*[0-9\.]+\s+[a-zA-Z0-9\.\?\:]+\s+([a-zA-Z0-9_\.\?\:]+)\s+\+\s+([a-zA-Z0-9\.\?\,\*]+)",
+                        stdout_str,
+                        re.MULTILINE)
                     assert matches, "No results found matching distribtion pattern in stdout: %s" % stdout_str
                     for match in matches:
-                        #print 'match:',match
                         prediction,prob = match
                         class_index,class_label = prediction.split(':')
                         class_index = int(class_index)
@@ -378,25 +414,28 @@ class Classifier(object):
                             prob = dict(zip(query.attribute_data[query.attributes[-1]], map(float, prob.replace('*','').split(','))))
                         else:
                             prob = float(prob)
-    #                    if query.attribute_types[query_variables[0]] in ('numeric','real','integer'):
-    #                        # Convert match string to data type.
-    #                        #class_label = float(class_label)
                         class_label = query.attribute_data[query.attributes[-1]][class_index-1]
-                        yield class_label, prob
+                        yield PredictionResult(
+                            actual=None,
+                            predicted=class_label,
+                            probability=prob,)
                 else:
                     # Otherwise, assume a simple output.
-                    matches = re.findall("\s*[0-9\.]+\s+[a-zA-Z0-9\.\?\:]+\s+([a-zA-Z0-9_\.\?\:]+)\s+", stdout_str)
+                    matches = re.findall(
+                        "^\s*([0-9\.]+)\s+([a-zA-Z0-9\.\?\:]+)\s+([a-zA-Z0-9_\.\?\:]+)\s+",
+                        stdout_str,
+                        re.MULTILINE)
                     assert matches, "No results found matching simple pattern in stdout: %s" % stdout_str
+                    #print 'matches:',len(matches)
                     for match in matches:
-                        class_index = match
-                        class_index = int(class_index)
+                        inst,actual,predicted = match
                         class_name = query.attributes[-1]
-                        class_type = query.attribute_types[class_name]
-                        if class_type == arff.TYPE_NUMERIC:
-                            yield class_index, None
-                        else:
-                            class_label = query.attribute_data[class_name][class_index-1]
-                            yield class_label, None
+                        actual_value = query.get_attribute_value(class_name, actual)
+                        predicted_value = query.get_attribute_value(class_name, predicted)
+                        yield PredictionResult(
+                            actual=actual_value,
+                            predicted=predicted_value,
+                            probability=None,)
         finally:
             # Cleanup files.
             if model_fn:
@@ -404,6 +443,21 @@ class Classifier(object):
                 os.remove(model_fn)
             if query_fn and clean_query:
                 os.remove(query_fn)
+                
+    def test(self, test_data, verbose=0):
+        data = arff.ArffFile.load(test_data)
+        data_itr = iter(data)
+        i = 0
+        correct = 0
+        total = 0
+        for result in self.predict(test_data, verbose=verbose):
+            i += 1
+            if verbose:
+                print i,result
+            row = data_itr.next()
+            total += 1
+            correct += result.predicted == result.actual
+        return correct/float(total)
 
 class Test(unittest.TestCase):
     
@@ -423,7 +477,8 @@ class Test(unittest.TestCase):
         # Make a valid query.
         query_fn = 'test/abalone-query.arff'
         predictions = list(c.predict(query_fn, verbose=0))
-        self.assertEqual(predictions[0], (7, None))
+        self.assertEqual(predictions[0],
+            PredictionResult(actual=None, predicted=7, probability=None))
             
         # Make a valid query.
         try:
@@ -457,22 +512,25 @@ class Test(unittest.TestCase):
 @attribute 'Shucked weight' numeric
 @attribute 'Viscera weight' numeric
 @attribute 'Shell weight' numeric
-@attribute 'Class_Rings' numeric
+@attribute 'Class_Rings' integer
 @data
 M,0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,?
 """
         data_str1 = query.write()
-        #print data_str1
+#        print data_str0
+#        print data_str1
         self.assertEqual(data_str0,data_str1)
         predictions = list(c.predict(query, verbose=0))
-        self.assertEqual(predictions[0], (7, None))
+        self.assertEqual(predictions[0],
+            PredictionResult(actual=None, predicted=7, probability=None))
         
         # Test pickling.
         fn = 'test/IBk.pkl'
         c.save(fn)
         c = Classifier.load(fn)
         predictions = list(c.predict(query, verbose=0))
-        self.assertEqual(predictions[0], (7, None))
+        self.assertEqual(predictions[0],
+            PredictionResult(actual=None, predicted=7, probability=None))
         #print 'Pickle verified.'
         
         # Make a valid dict query manually.
@@ -499,7 +557,8 @@ M,0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,?
             'Class_Rings':arff.MISSING,
         })
         predictions = list(c.predict(query, verbose=0))
-        self.assertEqual(predictions[0], (7, None))
+        self.assertEqual(predictions[0],
+            PredictionResult(actual=None, predicted=7, probability=None))
 
     def test_shortcut(self):
         c = IBk(K=1)
@@ -511,7 +570,62 @@ M,0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,?
         # Make a valid query.
         query_fn = 'test/abalone-query.arff'
         predictions = list(c.predict(query_fn, verbose=0))
-        self.assertEqual(predictions[0], (7, None))
+        self.assertEqual(len(predictions), 1)
+        self.assertEqual(predictions[0],
+            PredictionResult(actual=None, predicted=7, probability=None))
+        
+    def test_updateable(self):
+        """
+        Confirm updateable classifiers are used so that their model is in fact
+        updated and not overwritten.
+        """
+        c = IBk(K=1)
+        self.assertTrue('IBk' in UPDATEABLE_WEKA_CLASSIFIER_NAMES)
+        
+        train_fn1 = 'test/updateable-train-1.arff'
+        train_fn2 = 'test/updateable-train-2.arff'
+        save_fn = 'test/IBk.updated.pkl'
+        if os.path.isfile(save_fn):
+            os.remove(save_fn)
+        
+        c.train(train_fn1)
+        self.assertTrue(c._model_data)
+        
+        # It should have a perfect accuracy when tested on the same file
+        # it was trained with.
+        acc = c.test(train_fn1, verbose=0)
+        self.assertEqual(acc, 1.0)
+        
+        # It should have horrible accuracy on a completely different data
+        # file that it hasn't been trained on.
+        acc = c.test(train_fn2, verbose=0)
+        self.assertEqual(acc, 0.0)
+        pre_del_model = c._model_data
+        
+        # Reload the classifier from a pickle.
+        c.save(save_fn)
+        del c
+        
+        c = IBk.load(save_fn)
+        self.assertTrue(c._model_data)
+        self.assertEqual(c._model_data, pre_del_model)
+        
+        # Confirm the Weka model was persisted by confirming we still have
+        # perfect accuracy on the initial training file.
+        acc = c.test(train_fn1, verbose=0)
+        self.assertEqual(acc, 1.0)
+        
+        # Train the classifier on a completely different data set.
+        c.train(train_fn2)
+        
+        # Confirm it has perfect accuracy on the new data set.
+        acc = c.test(train_fn2, verbose=0)
+        self.assertEqual(acc, 1.0)
+        
+        # Confirm we still have perfect accuracy on the original data set.
+        acc = c.test(train_fn1, verbose=0)
+        self.assertEqual(acc, 1.0)
 
 if __name__ == '__main__':
     unittest.main()
+    

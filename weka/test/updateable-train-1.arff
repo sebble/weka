@@ -1,0 +1,14 @@
+@relation 'updateable'
+@attribute 'Sex' { M, F, I}
+@attribute 'Class_Rings' integer
+@data
+M,2
+M,2
+M,2
+M,2
+M,2
+M,2
+M,2
+M,2
+M,2
+M,2

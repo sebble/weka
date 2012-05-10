@@ -43,10 +43,24 @@ def is_numeric(v):
     except:
         return False
 
-TYPE_NUMERIC = 'numeric'
+TYPE_INTEGER = 'integer'
+TYPE_NUMERIC = 'numeric' # float or integer
+TYPE_REAL = 'real'
 TYPE_STRING = 'string'
 TYPE_NOMINAL = 'nominal'
-TYPES = [TYPE_NUMERIC,TYPE_STRING,TYPE_NOMINAL]
+TYPES = (
+    TYPE_INTEGER,
+    TYPE_NUMERIC,
+    TYPE_STRING,
+    TYPE_NOMINAL,
+)
+NUMERIC_TYPES = (
+    TYPE_INTEGER,
+    TYPE_NUMERIC,
+    TYPE_REAL,
+)
+
+STRIP_QUOTES_REGEX = re.compile('^[\'\"]|[\'\"]$')
 
 class ArffFile(object):
     """An ARFF File object describes a data set consisting of a number
@@ -89,7 +103,7 @@ class ArffFile(object):
         # Load schema.
         if schema:
             for name,data in schema:
-                name = re.sub('^[\'\"]|[\'\"]$', '', name)
+                name = STRIP_QUOTES_REGEX.sub('', name)
                 self.attributes.append(name)
                 if type(data) in (tuple,list):
                     self.attribute_types[name] = TYPE_NOMINAL
@@ -107,17 +121,30 @@ class ArffFile(object):
         self.data = []
         self.lineno = 0
         self.fout = None
+    
+    def get_attribute_value(self, name, index):
+        """
+        Returns the value associated with the given value index
+        of the attribute with the given name.
         
+        This is only applicable for nominal and string types.
+        """
+        if index == MISSING:
+            return
+        elif self.attribute_types[name] in NUMERIC_TYPES:
+            at = self.attribute_types[name]
+            if at == TYPE_INTEGER:
+                return int(index)
+            else:
+                return Decimal(str(index))
+        else:
+            return self.attribute_data[name][index-1]
+    
     def __iter__(self):
         for d in self.data:
-#            print '__iter0:',len(d),len(self.attributes)
-#            from collections import defaultdict
-#            counts = defaultdict(int)
-#            for n in self.attributes:
-#                counts[n] += 1
-#            print 'dups:',[(k,v) for k,v in counts.items() if v > 1]
-#            sys.exit()
-            named = dict(zip(self.attributes, d))
+            named = dict(zip(
+                [re.sub('^[\'\"]|[\'\"]$', '', _) for _ in self.attributes],
+                d))
             assert len(d) == len(self.attributes)
             assert len(d) == len(named)
             yield named
@@ -192,7 +219,7 @@ class ArffFile(object):
         line = []
         for e, a in zip(d, self.attributes):
             at = self.attribute_types[a]
-            if at in (TYPE_NUMERIC,'real','integer'):
+            if at in NUMERIC_TYPES:
                 line.append(str(e))
             elif at == TYPE_STRING:
                 line.append(self.esc(e))
@@ -210,14 +237,15 @@ class ArffFile(object):
         o.append("@relation " + self.relation)
         for a in self.attributes:
             at = self.attribute_types[a]
-            if at in (TYPE_NUMERIC,'real','integer'):
+            if at == TYPE_INTEGER:
+                o.append("@attribute " + self.esc(a) + " integer")
+            elif at in (TYPE_NUMERIC, TYPE_REAL):
                 o.append("@attribute " + self.esc(a) + " numeric")
             elif at == TYPE_STRING:
                 o.append("@attribute " + self.esc(a) + " string")
             elif at == TYPE_NOMINAL:
-                #print a,self.attribute_data[a]
                 o.append("@attribute " + self.esc(a) +
-                         " {" + ','.join(map(str, self.attribute_data[a])) + "}")
+                    " {" + ','.join(map(str, self.attribute_data[a])) + "}")
             else:
                 raise Exception, "Type " + at + " not supported for writing!"
         o.append("@data")
@@ -230,11 +258,15 @@ class ArffFile(object):
         return ("\'" + s + "\'").replace("''","'")
 
     def define_attribute(self, name, atype, data=None):
-        """Define a new attribute. atype has to be one
-        of 'numeric', 'string', and 'nominal'. For nominal
-        attributes, pass the possible values as data."""
+        """
+        Define a new attribute. atype has to be one
+        of 'integer', 'real', 'numeric', 'string', and 'nominal'.
+        For nominal attributes, pass the possible values as data.
+        """
         self.attributes.append(name)
-        assert atype in TYPES, "Unknown type '%s'. Must be one of: %s" % (','.join(TYPES),)
+        assert atype in TYPES, \
+            "Unknown type '%s'. Must be one of: %s" % \
+            (atype, ', '.join(TYPES),)
         self.attribute_types[name] = atype
         self.attribute_data[name] = data
 
@@ -266,10 +298,11 @@ class ArffFile(object):
         p = re.compile(r'[a-zA-Z_][a-zA-Z0-9_\[\]]*|\{[^\}]*\}|\'[^\']+\'|\"[^\"]+\"')
         l = [s.strip() for s in p.findall(l)]
         name = l[1]
+        name = STRIP_QUOTES_REGEX.sub('', name)
         atype = l[2]#.lower()
-        if (atype == 'real' or
-            atype == TYPE_NUMERIC or
-            atype == 'integer'):
+        if atype == TYPE_INTEGER:
+            self.define_attribute(name, TYPE_INTEGER)
+        elif (atype == TYPE_REAL or atype == TYPE_NUMERIC):
             self.define_attribute(name, TYPE_NUMERIC)
         elif atype == TYPE_STRING:
             self.define_attribute(name, TYPE_STRING)
@@ -302,14 +335,13 @@ class ArffFile(object):
             at = self.attribute_types[n]
             if v == MISSING:
                 datum.append(v)
-            elif at in (TYPE_NUMERIC,'real','integer'):
-                if is_numeric(v) or re.match(r'[+-]?[0-9]+(?:\.[0-9]*(?:[eE]-?[0-9]+)?)?', v):
-                    if at == 'integer':
-                        datum.append(int(v))
-                    else:
-                        datum.append(Decimal(str(v)))
-                else:
-                    raise Exception, 'non-numeric value %s for numeric attribute %s' % (v, n)
+            elif at == TYPE_INTEGER:
+                datum.append(int(v))
+            elif at in (TYPE_NUMERIC, TYPE_REAL):
+                #if is_numeric(v) or re.match(r'[+-]?[0-9]+(?:\.[0-9]*(?:[eE]-?[0-9]+)?)?', v):
+                datum.append(Decimal(str(v)))
+                #else:
+                #    raise Exception, 'non-numeric value %s for numeric attribute %s' % (v, n)
             elif at == TYPE_STRING:
                 datum.append(v)
             elif at == TYPE_NOMINAL:
