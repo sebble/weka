@@ -162,13 +162,13 @@
 %   9 'Class_Rings'             Int    0% 100%   0%     0 /  0%    28 /  1%   0% 
 @relation 'abalone'
 @attribute 'Sex' { M, F, I}
-@attribute 'Length' real
-@attribute 'Diameter' real
-@attribute 'Height' real
-@attribute 'Whole weight' real
-@attribute 'Shucked weight' real
-@attribute 'Viscera weight' real
-@attribute 'Shell weight' real
+@attribute 'Length' numeric
+@attribute 'Diameter' numeric
+@attribute 'Height' numeric
+@attribute 'Whole weight' numeric
+@attribute 'Shucked weight' numeric
+@attribute 'Viscera weight' numeric
+@attribute 'Shell weight' numeric
 @attribute 'Class_Rings' integer
 @data
 M,0.455,0.365,0.095,0.514,0.2245,0.101,0.15,15

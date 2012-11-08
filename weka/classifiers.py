@@ -7,7 +7,7 @@ Light wrapper around Weka.
 Added method load_raw() to load a raw Weka model file directly.
 Added support to retrieving probability distribution of a prediction.
 """
-VERSION = (0, 1, 0)
+VERSION = (0, 1, 1)
 __version__ = '.'.join(map(str, VERSION))
 
 from subprocess import Popen, PIPE
@@ -24,6 +24,7 @@ import tempfile
 import unittest
 
 import arff
+from arff import SPARSE, DENSE, Num, Nom, Int, Str
 
 DEFAULT_WEKA_JAR_PATH = '/usr/share/java/weka.jar'#:/usr/share/java/libsvm.jar'
 
@@ -52,6 +53,7 @@ WEKA_CLASSIFIERS = [
 'weka.classifiers.functions.RBFNetwork',
 'weka.classifiers.functions.SimpleLinearRegression',
 'weka.classifiers.functions.SimpleLogistic',
+'weka.classifiers.functions.SGD',
 'weka.classifiers.functions.SMO',
 'weka.classifiers.functions.SMOreg',
 'weka.classifiers.functions.VotedPerceptron',
@@ -130,6 +132,7 @@ UPDATEABLE_WEKA_CLASSIFIERS = [
 'weka.classifiers.bayes.NaiveBayesUpdateable',
 'weka.classifiers.rules.NNge',
 'weka.classifiers.meta.RacedIncrementalLogitBoost',
+'weka.classifiers.functions.SGD',
 'weka.classifiers.functions.Winnow',
 ]
 UPDATEABLE_WEKA_CLASSIFIER_NAMES = set(_.split('.')[-1] for _ in UPDATEABLE_WEKA_CLASSIFIERS)
@@ -308,6 +311,9 @@ class Classifier(object):
         
         If the file is a test file (i.e. contains no query variables),
         then the tuple will be of the form (prediction, actual).
+        
+        See http://weka.wikispaces.com/Making+predictions
+        for further explanation on interpreting Weka prediction output.
         """
         model_fn = None
         query_fn = None
@@ -333,15 +339,18 @@ class Classifier(object):
             fout = open(model_fn,'wb')
             fout.write(self._model_data)
             fout.close()
-                
+            
+#            print open(model_fn).read()
+#            print open(query_fn).read()
             # Call Weka Jar.
-            args = dict(CP=CP,
-                        classifier_name=self.name,
-                        model_fn=model_fn,
-                        query_fn=query_fn,
-                        #ckargs = self._get_ckargs_str(),
-                        distribution=('-distribution' if distribution else ''),
-                        )
+            args = dict(
+                CP=CP,
+                classifier_name=self.name,
+                model_fn=model_fn,
+                query_fn=query_fn,
+                #ckargs = self._get_ckargs_str(),
+                distribution=('-distribution' if distribution else ''),
+            )
             cmd = "java -cp %(CP)s %(classifier_name)s -p 0 %(distribution)s -l \"%(model_fn)s\" -T \"%(query_fn)s\"" % args
             if verbose:
                 print cmd
@@ -385,6 +394,15 @@ class Classifier(object):
                 # inst#     actual  predicted      error
                 #     1          ?      7              ? 
 
+                #=== Predictions on test data ===
+                #
+                # inst#     actual  predicted error prediction
+                #     1        1:?        1:0       0.99 
+                #     2        1:?        1:0       0.99 
+                #     3        1:?        1:0       0.99 
+                #     4        1:?        1:0       0.99 
+                #     5        1:?        1:0       0.99 
+
                 # Expected output with distribution:
                 #=== Predictions on test data ===
                 #
@@ -398,13 +416,13 @@ class Classifier(object):
 #                    for match in matches:
 #                        inst, actual, predicted, error = match
 #                        yield predicted, actual
-                if re.findall('error\s+distribution', stdout_str):
+                if re.findall('error\s+(?:distribution|prediction)', stdout_str):
                     # Check for distribution output.
                     matches = re.findall(
-                        "^\s*[0-9\.]+\s+[a-zA-Z0-9\.\?\:]+\s+([a-zA-Z0-9_\.\?\:]+)\s+\+\s+([a-zA-Z0-9\.\?\,\*]+)",
+                        "^\s*[0-9\.]+\s+[a-zA-Z0-9\.\?\:]+\s+(?P<cls_value>[a-zA-Z0-9_\.\?\:]+)\s+\+?\s+(?P<prob>[a-zA-Z0-9\.\?\,\*]+)",
                         stdout_str,
                         re.MULTILINE)
-                    assert matches, "No results found matching distribtion pattern in stdout: %s" % stdout_str
+                    assert matches, "No results found matching distribution pattern in stdout: %s" % stdout_str
                     for match in matches:
                         prediction,prob = match
                         class_index,class_label = prediction.split(':')
@@ -492,19 +510,19 @@ class Test(unittest.TestCase):
         # Make a valid query manually.
         query = arff.ArffFile(relation='test', schema=[
             ('Sex', ('M','F','I')),
-            ('Length', 'real'),
-            ('Diameter', 'real'),
-            ('Height', 'real'),
-            ('Whole weight', 'real'),
-            ('Shucked weight', 'real'),
-            ('Viscera weight', 'real'),
-            ('Shell weight', 'real'),
+            ('Length', 'numeric'),
+            ('Diameter', 'numeric'),
+            ('Height', 'numeric'),
+            ('Whole weight', 'numeric'),
+            ('Shucked weight', 'numeric'),
+            ('Viscera weight', 'numeric'),
+            ('Shell weight', 'numeric'),
             ('Class_Rings', 'integer'),
         ])
         query.append(['M',0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,'?'])
         data_str0 = """% 
 @relation test
-@attribute 'Sex' {M,F,I}
+@attribute 'Sex' {F,I,M}
 @attribute 'Length' numeric
 @attribute 'Diameter' numeric
 @attribute 'Height' numeric
@@ -516,10 +534,10 @@ class Test(unittest.TestCase):
 @data
 M,0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,?
 """
-        data_str1 = query.write()
+        data_str1 = query.write(format=DENSE)
 #        print data_str0
 #        print data_str1
-        self.assertEqual(data_str0,data_str1)
+        self.assertEqual(data_str0, data_str1)
         predictions = list(c.predict(query, verbose=0))
         self.assertEqual(predictions[0],
             PredictionResult(actual=None, predicted=7, probability=None))
@@ -536,13 +554,13 @@ M,0.35,0.265,0.09,0.2255,0.0995,0.0485,0.07,?
         # Make a valid dict query manually.
         query = arff.ArffFile(relation='test',schema=[
             ('Sex', ('M','F','I')),
-            ('Length', 'real'),
-            ('Diameter', 'real'),
-            ('Height', 'real'),
-            ('Whole weight', 'real'),
-            ('Shucked weight', 'real'),
-            ('Viscera weight', 'real'),
-            ('Shell weight', 'real'),
+            ('Length', 'numeric'),
+            ('Diameter', 'numeric'),
+            ('Height', 'numeric'),
+            ('Whole weight', 'numeric'),
+            ('Shucked weight', 'numeric'),
+            ('Viscera weight', 'numeric'),
+            ('Shell weight', 'numeric'),
             ('Class_Rings', 'integer'),
         ])
         query.append({

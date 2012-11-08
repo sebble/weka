@@ -1,7 +1,7 @@
 % This purposely uses a different schema than the file used for training in
 % order to confirm an exception is thrown.
 @relation 'rats'
-@attribute 'Mung' { S, P}
+@attribute 'Mung' {P,S}
 @attribute 'Shell hardness' real
 @attribute 'Class_Year' integer
 @data

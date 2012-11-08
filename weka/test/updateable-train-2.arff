@@ -1,5 +1,5 @@
 @relation 'updateable'
-@attribute 'Sex' { M, F, I}
+@attribute 'Sex' {F,I,M}
 @attribute 'Class_Rings' integer
 @data
 F,1

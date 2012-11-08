@@ -27,12 +27,18 @@
 2011.3.6 CKS
 Fixed regular expression to handle special characters in attribute names.
 Added options for parsing and copying only the schema.
+2012.11.4 CKS
+Added support for streaming and sparse data.
 """
 
+import os
 import sys
 import re
 import copy
+import unittest
+import tempfile
 from decimal import Decimal
+from StringIO import StringIO
 
 MISSING = '?'
 
@@ -42,6 +48,10 @@ def is_numeric(v):
         return True
     except:
         return False
+
+DENSE = 'dense'
+SPARSE = 'sparse'
+FORMATS = (DENSE, SPARSE)
 
 TYPE_INTEGER = 'integer'
 TYPE_NUMERIC = 'numeric' # float or integer
@@ -61,6 +71,82 @@ NUMERIC_TYPES = (
 )
 
 STRIP_QUOTES_REGEX = re.compile('^[\'\"]|[\'\"]$')
+
+class Value(object):
+    """
+    Base helper class for tagging units of data with an explicit schema type.
+    """
+    
+    __slots__ = ('value', 'cls')
+    
+    def __init__(self, v, cls=False):
+        self.value = v
+        self.cls = cls
+    
+    def __hash__(self):
+        #return hash((self.value, self.cls))
+        return hash(self.value)
+    
+    def __cmp__(self, other):
+        if type(self) == type(other):
+            #return cmp((self.value, self.cls), (other.value, other.cls))
+            return cmp(self.value, other.value)
+        else:
+            return NotImplemented
+    
+    def __repr__(self):
+        return repr(self.value)
+
+class Integer(Value):
+    c_type = TYPE_INTEGER
+    def __init__(self, v, *args, **kwargs):
+        v = int(v)
+        super(Integer, self).__init__(v, *args, **kwargs)
+Int = Integer
+
+class Numeric(Value):
+    c_type = TYPE_NUMERIC
+    def __init__(self, v, *args, **kwargs):
+        # TODO:causes loss of precision?
+        v = float(v)
+        super(Numeric, self).__init__(v, *args, **kwargs)
+Num = Numeric
+
+class String(Value):
+    c_type = TYPE_STRING
+    def __init__(self, v, *args, **kwargs):
+        v = str(v)
+        super(String, self).__init__(v, *args, **kwargs)
+Str = String
+
+class Nominal(Value):
+    c_type = TYPE_NOMINAL
+    pass
+Nom = Nominal
+
+TYPE_TO_CLASS = {
+    TYPE_INTEGER: Integer,
+    TYPE_NUMERIC: Numeric,
+    TYPE_STRING: String,
+    TYPE_NOMINAL: Nominal,
+    TYPE_REAL: Numeric,
+}
+
+def wrap_value(v):
+    if isinstance(v, Value):
+        return v
+    if v == MISSING:
+        return Str(v)
+    if isinstance(v, basestring):
+        return Str(v)
+    try:
+        return Num(v)
+    except ValueError:
+        pass
+    try:
+        return Int(v)
+    except ValueError:
+        pass
 
 class ArffFile(object):
     """An ARFF File object describes a data set consisting of a number
@@ -107,20 +193,21 @@ class ArffFile(object):
                 self.attributes.append(name)
                 if type(data) in (tuple,list):
                     self.attribute_types[name] = TYPE_NOMINAL
-                    self.attribute_data[name] = list(data)
+                    self.attribute_data[name] = set(data)
                 else:
                     self.attribute_types[name] = data
                     self.attribute_data[name] = None
         
     def clear(self):
-        self.attributes = []
-        self.attribute_types = dict()
-        self.attribute_data = dict()
+        self.attributes = [] # [attr_name, attr_name, ...]
+        self.attribute_types = dict() # {attr_name:type}
+        self.attribute_data = dict() # {attr_name:[nominal values]}
         self._filename = None
         self.comment = []
         self.data = []
         self.lineno = 0
         self.fout = None
+        self.class_attr_name = None
     
     def get_attribute_value(self, name, index):
         """
@@ -138,7 +225,14 @@ class ArffFile(object):
             else:
                 return Decimal(str(index))
         else:
-            return self.attribute_data[name][index-1]
+            assert self.attribute_types[name] == TYPE_NOMINAL
+            cls_index, cls_value = index.split(':')
+            #return self.attribute_data[name][index-1]
+            if cls_value != MISSING:
+                assert cls_value in self.attribute_data[name], \
+                    'Predicted value "%s" but only values %s are allowed.' \
+                        % (cls_value, ', '.join(self.attribute_data[name]))
+            return cls_value
     
     def __iter__(self):
         for d in self.data:
@@ -151,7 +245,9 @@ class ArffFile(object):
 
     @classmethod
     def load(cls, filename, schema_only=False):
-        """Load an ARFF File from a file."""
+        """
+        Load an ARFF File from a file.
+        """
         o = open(filename)
         s = o.read()
         a = cls.parse(s, schema_only=schema_only)
@@ -162,7 +258,9 @@ class ArffFile(object):
 
     @classmethod
     def parse(cls, s, schema_only=False):
-        """Parse an ARFF File already loaded into a string."""
+        """
+        Parse an ARFF File already loaded into a string.
+        """
         a = cls()
         a.state = 'comment'
         a.lineno = 1
@@ -189,72 +287,168 @@ class ArffFile(object):
             o.data = copy.deepcopy(self.data)
         return o
 
-    def save_stream(self, filename):
-        """Save an arff structure to a file, leaving the file object
-        open for writing of new data samples."""
-        if isinstance(filename, basestring):
-            filename = filename or self._filename
-            self.fout = open(filename, 'w')
-        else:
-            self.fout = filename
-        print>>self.fout, self.write().strip()
+    def open_stream(self, class_attr_name=None):
+        """
+        Save an arff structure to a file, leaving the file object
+        open for writing of new data samples.
+        This prevents you from directly accessing the data via Python,
+        but when generating a huge file, this prevents all your data
+        from being stored in memory.
+        """
+        _, self.fout_fn = tempfile.mkstemp()
+        self.fout = open(self.fout_fn, 'w')
+        self.schema_fout = StringIO()
+        if class_attr_name:
+            self.class_attr_name = class_attr_name
+        self.write(fout=self.schema_fout, schema_only=True)
+        self.write(fout=self.fout, data_only=True)
         self.fout.flush()
         
     def close_stream(self):
+        """
+        Terminates an open stream and returns the filename
+        of the file containing the streamed data.
+        """
         if self.fout:
+            fout = self.fout
+            fout_fn = self.fout_fn
+            self.fout.flush()
             self.fout.close()
             self.fout = None
+            self.fout_fn = None
+            
+            # Prepend schema to file.
+            _, schema_fn = tempfile.mkstemp()
+            open(schema_fn, 'w').write(self.schema_fout.getvalue())
+            args = dict(
+                f1=schema_fn,
+                f2=fout_fn,
+                f2_tmp=fout_fn+'.tmp',
+            )
+            os.system(('cat "%(f1)s" "%(f2)s" > "%(f2_tmp)s" ' + \
+                '&& mv "%(f2_tmp)s" "%(f2)s"') % args)
+            
+            return fout_fn
 
     def save(self, filename=None):
-        """Save an arff structure to a file."""
+        """
+        Save an arff structure to a file.
+        """
         filename = filename or self._filename
         o = open(filename, 'w')
         o.write(self.write())
         o.close()
 
-    def write_line(self, d):
+    def write_line(self, d, format=SPARSE):
         """
         Converts a single data line to a string.
         """
-        line = []
-        for e, a in zip(d, self.attributes):
-            at = self.attribute_types[a]
-            if at in NUMERIC_TYPES:
-                line.append(str(e))
-            elif at == TYPE_STRING:
-                line.append(self.esc(e))
-            elif at == TYPE_NOMINAL:
-                line.append(e)
-            else:
-                raise Exception, "Type " + at + " not supported for writing!"
-        s = ','.join(map(str,line))
-        return s
+        if format == DENSE:
+            #TODO:fix
+            assert not isinstance(d, dict), NotImplemented
+            line = []
+            for e, a in zip(d, self.attributes):
+                at = self.attribute_types[a]
+                if at in NUMERIC_TYPES:
+                    line.append(str(e))
+                elif at == TYPE_STRING:
+                    line.append(self.esc(e))
+                elif at == TYPE_NOMINAL:
+                    line.append(e)
+                else:
+                    raise Exception, \
+                        "Type " + at + " not supported for writing!"
+            s = ','.join(map(str, line))
+            return s
+        elif format == SPARSE:
+            line = []
+            for i, name in enumerate(self.attributes):
+                if isinstance(d, (list, tuple)):
+                    d = dict(zip(self.attributes, d))
+                    for k in d.iterkeys():
+                        if isinstance(d[k], Value):
+                            continue
+                        at = self.attribute_types[k]
+                        if d[k] == MISSING:
+                            d[k] = Str(d[k])
+                        elif at in (TYPE_NUMERIC, TYPE_REAL):
+                            d[k] = Num(d[k])
+                        elif at == TYPE_STRING:
+                            d[k] = Str(d[k])
+                        elif at == TYPE_INTEGER:
+                            d[k] = Int(d[k])
+                        elif at == TYPE_NOMINAL:
+                            d[k] = Nom(d[k])
+                        else:
+                            raise Exception, 'Unknown type: %s' % at
+                v = d.get(name)
+                if v is None:
+                    continue
+                elif v == MISSING or (isinstance(v, Value) and v.value == MISSING):
+                    v = MISSING
+                elif isinstance(v, String):
+                    v = '"%s"' % v.value
+                elif isinstance(v, Value):
+                    v = v.value
+                line.append('%i %s' % (i, v))
+            return '{' + (', '.join(line)) + '}'
+        else:
+            raise Exception, 'Uknown format: %s' % (format,)
 
-    def write(self):
-        """Write an arff structure to a string."""
-        o = []
-        o.append('% ' + re.sub("\n", "\n% ", '\n'.join(self.comment)))
-        o.append("@relation " + self.relation)
+    def write_attributes(self, fout=None):
+        close = False
+        if fout is None:
+            close = True
+            fout = StringIO()
         for a in self.attributes:
             at = self.attribute_types[a]
             if at == TYPE_INTEGER:
-                o.append("@attribute " + self.esc(a) + " integer")
+                print>>fout, "@attribute " + self.esc(a) + " integer"
             elif at in (TYPE_NUMERIC, TYPE_REAL):
-                o.append("@attribute " + self.esc(a) + " numeric")
+                print>>fout, "@attribute " + self.esc(a) + " numeric"
             elif at == TYPE_STRING:
-                o.append("@attribute " + self.esc(a) + " string")
+                print>>fout, "@attribute " + self.esc(a) + " string"
             elif at == TYPE_NOMINAL:
-                o.append("@attribute " + self.esc(a) +
-                    " {" + ','.join(map(str, self.attribute_data[a])) + "}")
+                nom_vals = [_ for _ in self.attribute_data[a] if _ != MISSING]
+                nom_vals = sorted(nom_vals)
+                print>>fout, "@attribute " + self.esc(a) + \
+                    " {" + ','.join(map(str, nom_vals)) + "}"
             else:
                 raise Exception, "Type " + at + " not supported for writing!"
-        o.append("@data")
-        for d in self.data:
-            o.append(self.write_line(d))
-        return "\n".join(o) + "\n"
+        if isinstance(fout, StringIO) and close:
+            return fout.getvalue()
+
+    def write(self,
+        fout=None,
+        format=SPARSE,
+        schema_only=False,
+        data_only=False):
+        """
+        Write an arff structure to a string.
+        """
+        assert not (schema_only and data_only), 'Make up your mind.'
+        assert format in FORMATS, \
+            'Invalid format "%s". Should be one of: %s' \
+                % (format, ', '.join(FORMATS))
+        close = False
+        if fout is None:
+            close = True
+            fout = StringIO()
+        if not data_only:
+            print>>fout, '% ' + re.sub("\n", "\n% ", '\n'.join(self.comment))
+            print>>fout, "@relation " + self.relation
+            self.write_attributes(fout=fout)
+        if not schema_only:
+            print>>fout, "@data"
+            for d in self.data:
+                print>>fout, self.write_line(d, format=format)
+        if isinstance(fout, StringIO) and close:
+            return fout.getvalue()
 
     def esc(self, s):
-        "Escape a string if it contains spaces"
+        """
+        Escape a string if it contains spaces.
+        """
         return ("\'" + s + "\'").replace("''","'")
 
     def define_attribute(self, name, atype, data=None):
@@ -295,7 +489,8 @@ class ArffFile(object):
         self.relation = l[1]
 
     def __parse_attribute(self, l):
-        p = re.compile(r'[a-zA-Z_][a-zA-Z0-9_\[\]]*|\{[^\}]*\}|\'[^\']+\'|\"[^\"]+\"')
+        p = re.compile(
+            r'[a-zA-Z_][a-zA-Z0-9_\[\]]*|\{[^\}]*\}|\'[^\']+\'|\"[^\"]+\"')
         l = [s.strip() for s in p.findall(l)]
         name = l[1]
         name = STRIP_QUOTES_REGEX.sub('', name)
@@ -314,20 +509,47 @@ class ArffFile(object):
 
     def _parse_data(self, l):
         if isinstance(l, basestring):
-            # Convert string to list.
-            l = [s.strip() for s in l.split(',')]
+            l = l.strip()
+            if l.startswith('{'):
+                assert l.endswith('}'), 'Malformed sparse data line: %s' % (l,)
+                assert not self.fout, NotImplemented
+                dline = {}
+                parts = re.split(r'(?<!\\),', l[1:-1])
+                for part in parts:
+                    index, value = re.findall(
+                        '(^[0-9]+)\s+(.*)$', part.strip())[0]
+                    index = int(index)
+                    if value[0] == value[-1] and value[0] in ('"', "'"):
+                        # Strip quotes.
+                        value = value[1:-1]
+                    # TODO:0 or 1-indexed? Weka uses 0-indexing?!
+                    #name = self.attributes[index-1]
+                    name = self.attributes[index]
+                    ValueClass = TYPE_TO_CLASS[self.attribute_types[name]]
+                    if value == MISSING:
+                        dline[name] = Str(value)
+                    else:
+                        dline[name] = ValueClass(value)
+                self.data.append(dline)
+                return
+            else:
+                # Convert string to list.
+                l = [s.strip() for s in l.split(',')]
         elif isinstance(l, dict):
-            assert len(l) == len(self.attributes), "Sparse data not supported."
+            assert len(l) == len(self.attributes), \
+                "Sparse data not supported."
             # Convert dict to list.
             #l = dict((k,v) for k,v in l.iteritems())
             # Confirm complete feature name overlap.
-            assert set(self.esc(a) for a in l) == set(self.esc(a) for a in self.attributes)
+            assert set(self.esc(a) for a in l) == \
+                set(self.esc(a) for a in self.attributes)
             l = [l[name] for name in self.attributes]
         else:
             # Otherwise, confirm list.
             assert type(l) in (tuple,list)
         if len(l) != len(self.attributes):
-            print "Warning: line %d contains wrong number of values" % self.lineno
+            print ("Warning: line %d contains wrong " + \
+                   "number of values") % self.lineno
             return 
 
         datum = []
@@ -338,17 +560,15 @@ class ArffFile(object):
             elif at == TYPE_INTEGER:
                 datum.append(int(v))
             elif at in (TYPE_NUMERIC, TYPE_REAL):
-                #if is_numeric(v) or re.match(r'[+-]?[0-9]+(?:\.[0-9]*(?:[eE]-?[0-9]+)?)?', v):
                 datum.append(Decimal(str(v)))
-                #else:
-                #    raise Exception, 'non-numeric value %s for numeric attribute %s' % (v, n)
             elif at == TYPE_STRING:
                 datum.append(v)
             elif at == TYPE_NOMINAL:
                 if v in self.attribute_data[n]:
                     datum.append(v)
                 else:
-                    raise Exception, 'incorrect value %s for nominal attribute %s' % (v, n)
+                    raise Exception, \
+                        'Incorrect value %s for nominal attribute %s' % (v, n)
         if self.fout:
             # If we're streaming out data, then don't even bother saving it to
             # memory and just flush it out to disk instead.
@@ -372,24 +592,146 @@ class ArffFile(object):
                        ', '.join(self.attribute_data[n]))
         for d in self.data:
             print d
-            
-    def append(self, line):
-        assert len(line) == len(self.attributes)
-        self._parse_data(line)
+    
+    def set_class(self, name):
+        assert name in self.attributes
+        self.attributes.remove(name)
+        self.attributes.append(name)
+    
+    def set_nominal_values(self, name, values):
+        assert name in self.attributes
+        assert self.attribute_types[name] == TYPE_NOMINAL
+        self.attribute_data.setdefault(name, set())
+        self.attribute_data[name] = set(self.attribute_data[name])
+        self.attribute_data[name].update(values)
+    
+    def append(self, line, schema_only=False):
+        schema_change = False
+        if isinstance(line, dict):
+            # Validate line types against schema.
+            for k, v in line.iteritems():
+                prior_type = self.attribute_types.get(k,
+                    v.c_type if isinstance(v, Value) else None)
+#                assert isinstance(v, Value), \
+#                    'Values must be tagged with a Value type.'
+                if not isinstance(v, Value):
+                    if v == MISSING:
+                        v = Str(v)
+                    else:
+                        v = TYPE_TO_CLASS[prior_type](v)
+                if v.value != MISSING:
+                    assert prior_type == v.c_type, \
+                        ('Attempting to set attribute %s to type %s but ' + \
+                         'it is already defined as type %s.') \
+                            % (k, prior_type, v.c_type)
+                if k not in self.attribute_types:
+                    self.attribute_types[k] = v.c_type
+                    self.attributes.append(k)
+                    schema_change = True
+                if isinstance(v, Nominal):
+                    self.attribute_data.setdefault(k, set())
+                    if v.value not in self.attribute_data[k]:
+                        self.attribute_data[k].add(v.value)
+                        schema_change = True
+                if v.cls:
+                    if self.class_attr_name is None:
+                        self.class_attr_name = k
+                    else:
+                        assert self.class_attr_name == k, \
+                            ('Attempting to set class to "%s" when it has ' + \
+                            'already been set to "%s"') \
+                                % (k, self.class_attr_name)
+                                
+                # Ensure the class attribute is the last one listed,
+                # as that's assumed to be the class unless otherwise specified.
+                if self.class_attr_name:
+                    try:
+                        self.attributes.remove(self.class_attr_name)
+                        self.attributes.append(self.class_attr_name)
+                    except ValueError:
+                        pass
+                    
+            if schema_change:
+                #print 'schema change:',line
+                if self.fout:
+                    self.schema_fout.seek(0)
+                    self.write(fout=self.schema_fout, schema_only=True)
+                    self.schema_fout.seek(0, 2)
+                    
+            if not schema_only:
+                # Append line to data set.
+                if self.fout:
+                    line_str = self.write_line(line)
+                    print>>self.fout, line_str
+                else:
+                    self.data.append(line)
+        else:
+            assert len(line) == len(self.attributes)
+            self._parse_data(line)
 
-#a = ArffFile.read('../examples/diabetes.arff')
+class Test(unittest.TestCase):
+    
+    def test_sparse_stream(self):
+        
+        s0 = """% 
+@relation test-abalone
+@attribute 'Diameter' numeric
+@attribute 'Length' numeric
+@attribute 'Sex' {F,M}
+@attribute 'Whole_weight' numeric
+@attribute 'Class_Rings' integer
+@data
+{0 0.286, 1 0.35, 2 M, 4 15}
+{0 0.86, 2 F, 3 0.98, 4 7}
+"""
+        
+        rows = [
+            dict(
+                Sex=Nom('M'),
+                Length=Num(0.35),
+                Diameter=Num(0.286),
+                Class_Rings=Int(15, cls=True)),
+            dict(
+                Sex=Nom('F'),
+                Diameter=Num(0.86),
+                Whole_weight=Num(0.98),
+                Class_Rings=Int(7, cls=True)),
+        ]
+        
+        a1 = ArffFile(relation='test-abalone')
+        for row in rows:
+            a1.append(row)
+        self.assertEqual(a1.class_attr_name, 'Class_Rings')
+        s1 = a1.write()
+#        print s0
+#        print s1
+        self.assertEqual(s1, s0)
+        
+        a2 = ArffFile.parse(s1)
+        for i,line in enumerate(a2.data):
+            self.assertEqual(line, a1.data[i])
+        s2 = a2.write()
+        self.assertEqual(s1, s2)
+        
+        a3 = ArffFile(relation='test-abalone')
+        self.assertEqual(len(a3.data), 0)
+        a3.open_stream(class_attr_name='Class_Rings')
+        
+        # When streaming, you have to provide your schema ahead of time,
+        # since otherwise we'd have to update the indexes on all files
+        # previously written to the file.
+        for row in rows:
+            a3.append(row, schema_only=True)
+            self.assertEqual(len(a3.data), 0)
+            
+        for row in rows:
+            a3.append(row)
+            self.assertEqual(len(a3.data), 0)
+        
+        fn = a3.close_stream()
+        s3 = open(fn,'r').read()
+        os.remove(fn)
+        self.assertEqual(s2, s3)
 
 if __name__ == '__main__':
-    a = ArffFile.parse("""% yes
-% this is great
-@relation foobar
-@attribute foo {a,b,c}
-@attribute bar real
-@data
-a, 1
-b, 2
-c, d
-d, 3
-""")
-    a.dump()
-    print a.write()
+    unittest.main()
