@@ -287,7 +287,11 @@ class ArffFile(object):
             o.data = copy.deepcopy(self.data)
         return o
 
-    def open_stream(self, class_attr_name=None):
+    def flush(self):
+        if self.fout:
+            self.fout.flush()
+
+    def open_stream(self, class_attr_name=None, fn=None):
         """
         Save an arff structure to a file, leaving the file object
         open for writing of new data samples.
@@ -295,12 +299,14 @@ class ArffFile(object):
         but when generating a huge file, this prevents all your data
         from being stored in memory.
         """
-        _, self.fout_fn = tempfile.mkstemp()
+        if fn:
+            self.fout_fn = fn
+        else:
+            _, self.fout_fn = tempfile.mkstemp()
         self.fout = open(self.fout_fn, 'w')
-        self.schema_fout = StringIO()
         if class_attr_name:
             self.class_attr_name = class_attr_name
-        self.write(fout=self.schema_fout, schema_only=True)
+        self.write(fout=self.fout, schema_only=True)
         self.write(fout=self.fout, data_only=True)
         self.fout.flush()
         
@@ -316,18 +322,6 @@ class ArffFile(object):
             self.fout.close()
             self.fout = None
             self.fout_fn = None
-            
-            # Prepend schema to file.
-            _, schema_fn = tempfile.mkstemp()
-            open(schema_fn, 'w').write(self.schema_fout.getvalue())
-            args = dict(
-                f1=schema_fn,
-                f2=fout_fn,
-                f2_tmp=fout_fn+'.tmp',
-            )
-            os.system(('cat "%(f1)s" "%(f2)s" > "%(f2_tmp)s" ' + \
-                '&& mv "%(f2_tmp)s" "%(f2)s"') % args)
-            
             return fout_fn
 
     def save(self, filename=None):
@@ -362,35 +356,54 @@ class ArffFile(object):
             return s
         elif format == SPARSE:
             line = []
+            
+            # Convert flat row into dictionary.
+            if isinstance(d, (list, tuple)):
+                d = dict(zip(self.attributes, d))
+                for k in d.iterkeys():
+                    at = self.attribute_types.get(k)
+                    if isinstance(d[k], Value):
+                        continue
+                    elif d[k] == MISSING:
+                        d[k] = Str(d[k])
+                    elif at in (TYPE_NUMERIC, TYPE_REAL):
+                        d[k] = Num(d[k])
+                    elif at == TYPE_STRING:
+                        d[k] = Str(d[k])
+                    elif at == TYPE_INTEGER:
+                        d[k] = Int(d[k])
+                    elif at == TYPE_NOMINAL:
+                        d[k] = Nom(d[k])
+                    else:
+                        raise Exception, 'Unknown type: %s' % at
+                    
             for i, name in enumerate(self.attributes):
-                if isinstance(d, (list, tuple)):
-                    d = dict(zip(self.attributes, d))
-                    for k in d.iterkeys():
-                        if isinstance(d[k], Value):
-                            continue
-                        at = self.attribute_types[k]
-                        if d[k] == MISSING:
-                            d[k] = Str(d[k])
-                        elif at in (TYPE_NUMERIC, TYPE_REAL):
-                            d[k] = Num(d[k])
-                        elif at == TYPE_STRING:
-                            d[k] = Str(d[k])
-                        elif at == TYPE_INTEGER:
-                            d[k] = Int(d[k])
-                        elif at == TYPE_NOMINAL:
-                            d[k] = Nom(d[k])
-                        else:
-                            raise Exception, 'Unknown type: %s' % at
                 v = d.get(name)
                 if v is None:
+#                    print 'Skipping attribute with None value:', name
                     continue
-                elif v == MISSING or (isinstance(v, Value) and v.value == MISSING):
+                elif v == MISSING or (isinstance(v, Value) \
+                and v.value == MISSING):
                     v = MISSING
                 elif isinstance(v, String):
                     v = '"%s"' % v.value
                 elif isinstance(v, Value):
                     v = v.value
-                line.append('%i %s' % (i, v))
+                    
+                if v != MISSING and self.attribute_types[name] == TYPE_NOMINAL\
+                and str(v) not in map(str, self.attribute_data[name]):
+#                    print 'Skipping nominal attribute with unregistered value.'
+#                    print 'Nominal attribute %s is set to "%s" but only allows %s.' % (name, v, ', '.join(map(str, self.attribute_data[name])))
+#                    print [type(_) for _ in ([v]+list(self.attribute_data[name]))]
+                    pass
+                else:
+                    line.append('%i %s' % (i, v))
+            if len(line) == 1 and MISSING in line[-1]:
+                # Skip lines with nothing other than a missing class.
+                return
+            elif not len(line):
+                # Don't write blank lines.
+                return
             return '{' + (', '.join(line)) + '}'
         else:
             raise Exception, 'Uknown format: %s' % (format,)
@@ -441,7 +454,9 @@ class ArffFile(object):
         if not schema_only:
             print>>fout, "@data"
             for d in self.data:
-                print>>fout, self.write_line(d, format=format)
+                line_str = self.write_line(d, format=format)
+                if line_str:
+                    print>>fout, line_str
         if isinstance(fout, StringIO) and close:
             return fout.getvalue()
 
@@ -572,7 +587,9 @@ class ArffFile(object):
         if self.fout:
             # If we're streaming out data, then don't even bother saving it to
             # memory and just flush it out to disk instead.
-            print>>self.fout, self.write_line(datum)
+            line_str = self.write_line(datum)
+            if line_str:
+                print>>self.fout, line_str
             self.fout.flush()
         else:
             self.data.append(datum)
@@ -605,64 +622,79 @@ class ArffFile(object):
         self.attribute_data[name] = set(self.attribute_data[name])
         self.attribute_data[name].update(values)
     
-    def append(self, line, schema_only=False):
+    def append(self, line, schema_only=False, update_schema=True):
         schema_change = False
         if isinstance(line, dict):
             # Validate line types against schema.
-            for k, v in line.iteritems():
-                prior_type = self.attribute_types.get(k,
-                    v.c_type if isinstance(v, Value) else None)
-#                assert isinstance(v, Value), \
-#                    'Values must be tagged with a Value type.'
-                if not isinstance(v, Value):
-                    if v == MISSING:
-                        v = Str(v)
-                    else:
-                        v = TYPE_TO_CLASS[prior_type](v)
-                if v.value != MISSING:
-                    assert prior_type == v.c_type, \
-                        ('Attempting to set attribute %s to type %s but ' + \
-                         'it is already defined as type %s.') \
-                            % (k, prior_type, v.c_type)
-                if k not in self.attribute_types:
-                    self.attribute_types[k] = v.c_type
-                    self.attributes.append(k)
-                    schema_change = True
-                if isinstance(v, Nominal):
-                    self.attribute_data.setdefault(k, set())
-                    if v.value not in self.attribute_data[k]:
-                        self.attribute_data[k].add(v.value)
-                        schema_change = True
-                if v.cls:
-                    if self.class_attr_name is None:
-                        self.class_attr_name = k
-                    else:
-                        assert self.class_attr_name == k, \
-                            ('Attempting to set class to "%s" when it has ' + \
-                            'already been set to "%s"') \
-                                % (k, self.class_attr_name)
-                                
-                # Ensure the class attribute is the last one listed,
-                # as that's assumed to be the class unless otherwise specified.
-                if self.class_attr_name:
-                    try:
-                        self.attributes.remove(self.class_attr_name)
-                        self.attributes.append(self.class_attr_name)
-                    except ValueError:
-                        pass
+            if update_schema:
+                for k, v in line.items():
+                    prior_type = self.attribute_types.get(k,
+                        v.c_type if isinstance(v, Value) else None)
+                    if not isinstance(v, Value):
+                        if v == MISSING:
+                            v = Str(v)
+                        else:
+                            v = TYPE_TO_CLASS[prior_type](v)
+                    if v.value != MISSING:
+                        assert prior_type == v.c_type, \
+                            ('Attempting to set attribute %s to type %s but ' + \
+                             'it is already defined as type %s.') \
+                                % (k, prior_type, v.c_type)
+                    if k not in self.attribute_types:
+                        if self.fout:
+                            # Remove feature that violates the schema
+                            # during streaming.
+                            if k in line: del line[k]
+                        else:
+                            self.attribute_types[k] = v.c_type
+                            self.attributes.append(k)
+                            schema_change = True
+                    if isinstance(v, Nominal):
+                        if self.fout:
+                            # Remove feature that violates the schema
+                            # during streaming.
+                            if k not in self.attributes:
+                                if k in line: del line[k]
+                            elif v.value not in self.attribute_data[k]:
+                                if k in line: del line[k]
+                        else:
+                            self.attribute_data.setdefault(k, set())
+                            if v.value not in self.attribute_data[k]:
+                                self.attribute_data[k].add(v.value)
+                                schema_change = True
+                    if v.cls:
+                        if self.class_attr_name is None:
+                            self.class_attr_name = k
+                        else:
+                            assert self.class_attr_name == k, \
+                                ('Attempting to set class to "%s" when it has ' + \
+                                'already been set to "%s"') \
+                                    % (k, self.class_attr_name)
+                                    
+                    # Ensure the class attribute is the last one listed,
+                    # as that's assumed to be the class unless otherwise specified.
+                    if self.class_attr_name:
+                        try:
+                            self.attributes.remove(self.class_attr_name)
+                            self.attributes.append(self.class_attr_name)
+                        except ValueError:
+                            pass
                     
-            if schema_change:
-                #print 'schema change:',line
-                if self.fout:
-                    self.schema_fout.seek(0)
-                    self.write(fout=self.schema_fout, schema_only=True)
-                    self.schema_fout.seek(0, 2)
+                if schema_change:
+                    assert not self.fout, \
+                        'Attempting to add data that doesn\'t match ' + \
+                        'the schema while streaming.'
                     
             if not schema_only:
                 # Append line to data set.
                 if self.fout:
+#                    print 'line:',line
+#                    for k in line.iterkeys():
+#                        print k, k in self.attribute_types
+#                    print '-'*80
                     line_str = self.write_line(line)
-                    print>>self.fout, line_str
+                    if line_str:
+                        print>>self.fout, line_str
                 else:
                     self.data.append(line)
         else:
@@ -697,6 +729,18 @@ class Test(unittest.TestCase):
                 Whole_weight=Num(0.98),
                 Class_Rings=Int(7, cls=True)),
         ]
+        rows_extra = [
+            dict(
+                Sex=Nom('N'),
+                Length=Num(0.35),
+                Diameter=Num(0.286),
+                Class_Rings=Int(15, cls=True)),
+            dict(
+                Sex=Nom('B'),
+                Diameter=Num(0.86),
+                Whole_weight=Num(0.98),
+                Class_Rings=Int(7, cls=True)),
+        ]
         
         a1 = ArffFile(relation='test-abalone')
         for row in rows:
@@ -715,7 +759,7 @@ class Test(unittest.TestCase):
         
         a3 = ArffFile(relation='test-abalone')
         self.assertEqual(len(a3.data), 0)
-        a3.open_stream(class_attr_name='Class_Rings')
+        #a3.open_stream(class_attr_name='Class_Rings')
         
         # When streaming, you have to provide your schema ahead of time,
         # since otherwise we'd have to update the indexes on all files
@@ -724,14 +768,30 @@ class Test(unittest.TestCase):
             a3.append(row, schema_only=True)
             self.assertEqual(len(a3.data), 0)
             
-        for row in rows:
+        a3.open_stream(class_attr_name='Class_Rings')
+        for row in (rows+rows_extra):
             a3.append(row)
             self.assertEqual(len(a3.data), 0)
         
         fn = a3.close_stream()
         s3 = open(fn,'r').read()
+        #print s3
         os.remove(fn)
-        self.assertEqual(s2, s3)
+        # Note the rows that have features violating the schema are
+        # automatically omitted when in streaming mode.
+        self.assertEqual(s3, """% 
+@relation test-abalone
+@attribute 'Diameter' numeric
+@attribute 'Length' numeric
+@attribute 'Sex' {F,M}
+@attribute 'Whole_weight' numeric
+@attribute 'Class_Rings' integer
+@data
+{0 0.286, 1 0.35, 2 M, 4 15}
+{0 0.86, 2 F, 3 0.98, 4 7}
+{0 0.286, 1 0.35, 4 15}
+{0 0.86, 3 0.98, 4 7}
+""")
 
 if __name__ == '__main__':
     unittest.main()

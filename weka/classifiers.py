@@ -7,7 +7,7 @@ Light wrapper around Weka.
 Added method load_raw() to load a raw Weka model file directly.
 Added support to retrieving probability distribution of a prediction.
 """
-VERSION = (0, 1, 1)
+VERSION = (0, 1, 2)
 __version__ = '.'.join(map(str, VERSION))
 
 from subprocess import Popen, PIPE
@@ -26,7 +26,7 @@ import unittest
 import arff
 from arff import SPARSE, DENSE, Num, Nom, Int, Str
 
-DEFAULT_WEKA_JAR_PATH = '/usr/share/java/weka.jar'#:/usr/share/java/libsvm.jar'
+DEFAULT_WEKA_JAR_PATH = '/usr/share/java/weka.jar:/usr/share/java/libsvm.jar'
 
 BP = os.path.dirname(os.path.abspath(__file__))
 CP = os.environ.get('WEKA_JAR_PATH', DEFAULT_WEKA_JAR_PATH)
@@ -214,7 +214,10 @@ class Classifier(object):
             for k,v in self.ckargs.iteritems():
                 if not k.startswith('-'):
                     k = '-'+k
-                ckargs.append('%s %s' % (k,v))
+                if v is None:
+                    ckargs.append('%s' % (k,))
+                else:
+                    ckargs.append('%s %s' % (k,v))
         ckargs = ' '.join(ckargs)
         return ckargs
         
@@ -290,7 +293,7 @@ class Classifier(object):
             
             # Save schema.
             if not self.schema:
-                self.schema = arff.ArffFile.load(training_fn).copy(schema_only=True)
+                self.schema = arff.ArffFile.load(training_fn, schema_only=True).copy(schema_only=True)
             
             # Save model.
             self._model_data = open(model_fn,'rb').read()
@@ -416,7 +419,16 @@ class Classifier(object):
 #                    for match in matches:
 #                        inst, actual, predicted, error = match
 #                        yield predicted, actual
-                if re.findall('error\s+(?:distribution|prediction)', stdout_str):
+
+                q = re.findall('J48 pruned tree\s+\-+:\s+([0-9]+)\s+', stdout_str, re.MULTILINE|re.DOTALL)
+                if q:
+                    class_label = q[0]
+                    prob = 1.0
+                    yield PredictionResult(
+                        actual=None,
+                        predicted=class_label,
+                        probability=prob,)
+                elif re.findall('error\s+(?:distribution|prediction)', stdout_str):
                     # Check for distribution output.
                     matches = re.findall(
                         "^\s*[0-9\.]+\s+[a-zA-Z0-9\.\?\:]+\s+(?P<cls_value>[a-zA-Z0-9_\.\?\:]+)\s+\+?\s+(?P<prob>[a-zA-Z0-9\.\?\,\*]+)",
