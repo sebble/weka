@@ -302,7 +302,8 @@ class ArffFile(object):
         if fn:
             self.fout_fn = fn
         else:
-            _, self.fout_fn = tempfile.mkstemp()
+            fd, self.fout_fn = tempfile.mkstemp()
+            os.close(fd)
         self.fout = open(self.fout_fn, 'w')
         if class_attr_name:
             self.class_attr_name = class_attr_name

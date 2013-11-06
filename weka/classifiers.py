@@ -7,7 +7,7 @@ Light wrapper around Weka.
 Added method load_raw() to load a raw Weka model file directly.
 Added support to retrieving probability distribution of a prediction.
 """
-VERSION = (0, 1, 2)
+VERSION = (0, 1, 3)
 __version__ = '.'.join(map(str, VERSION))
 
 from subprocess import Popen, PIPE
@@ -238,7 +238,8 @@ class Classifier(object):
                 training_fn = training_data
             else:
                 assert isinstance(training_data, arff.ArffFile)
-                training_fn = tempfile.mkstemp(suffix='.arff')[1]
+                fd, training_fn = tempfile.mkstemp(suffix='.arff')
+                os.close(fd)
                 open(training_fn,'w').write(training_data.write())
                 clean_training = True
             assert training_fn
@@ -250,7 +251,8 @@ class Classifier(object):
                     testing_fn = testing_data
                 else:
                     assert isinstance(testing_data, arff.ArffFile)
-                    testing_fn = tempfile.mkstemp(suffix='.arff')[1]
+                    fd, testing_fn = tempfile.mkstemp(suffix='.arff')
+                    os.close(fd)
                     open(testing_fn,'w').write(testing_data.write())
                     clean_testing = True
             else:
@@ -258,20 +260,22 @@ class Classifier(object):
             assert testing_fn
                 
             # Validate model file.
-            model_fn = tempfile.mkstemp()[1]
+            fd, model_fn = tempfile.mkstemp()
+            os.close(fd)
             if self._model_data:
                 fout = open(model_fn,'wb')
                 fout.write(self._model_data)
                 fout.close()
             
             # Call Weka Jar.
-            args = dict(CP=CP,
-                        classifier_name=self.name,
-                        model_fn=model_fn,
-                        training_fn=training_fn,
-                        testing_fn=testing_fn,
-                        ckargs = self._get_ckargs_str(),
-                        )
+            args = dict(
+                CP=CP,
+                classifier_name=self.name,
+                model_fn=model_fn,
+                training_fn=training_fn,
+                testing_fn=testing_fn,
+                ckargs = self._get_ckargs_str(),
+            )
             if self._model_data:
                 # Load existing model.
                 cmd = "java -cp %(CP)s %(classifier_name)s -l \"%(model_fn)s\" -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\"" % args
@@ -330,13 +334,15 @@ class Classifier(object):
                 query_fn = query_data
             else:
                 assert isinstance(query_data, arff.ArffFile)
-                query_fn = tempfile.mkstemp(suffix='.arff')[1]
+                fd, query_fn = tempfile.mkstemp(suffix='.arff')
+                os.close(fd)
                 open(query_fn,'w').write(query_data.write())
                 clean_query = True
             assert query_fn
                 
             # Validate model file.
-            model_fn = tempfile.mkstemp()[1]
+            fd, model_fn = tempfile.mkstemp()
+            os.close(fd)
             assert self._model_data, \
                 "You must train this classifier before predicting."
             fout = open(model_fn,'wb')

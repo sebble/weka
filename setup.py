@@ -13,7 +13,7 @@ class TestCommand(Command):
     def finalize_options(self):
         pass
     def run(self):
-        os.system('cd weka; python classifiers.py')
+        os.system('cd weka; python ./classifiers.py')
 
 setup(name='weka',
     version=weka.__version__,
