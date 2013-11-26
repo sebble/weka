@@ -7,7 +7,7 @@ Light wrapper around Weka.
 Added method load_raw() to load a raw Weka model file directly.
 Added support to retrieving probability distribution of a prediction.
 """
-VERSION = (0, 1, 3)
+VERSION = (0, 1, 4)
 __version__ = '.'.join(map(str, VERSION))
 
 from subprocess import Popen, PIPE
