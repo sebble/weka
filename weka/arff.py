@@ -506,7 +506,7 @@ class ArffFile(object):
 
     def __parse_attribute(self, l):
         p = re.compile(
-            r'[a-zA-Z_][a-zA-Z0-9_\[\]]*|\{[^\}]*\}|\'[^\']+\'|\"[^\"]+\"')
+            r'[a-zA-Z_][a-zA-Z0-9_\-\[\]]*|\{[^\}]*\}|\'[^\']+\'|\"[^\"]+\"')
         l = [s.strip() for s in p.findall(l)]
         name = l[1]
         name = STRIP_QUOTES_REGEX.sub('', name)
@@ -564,8 +564,9 @@ class ArffFile(object):
             # Otherwise, confirm list.
             assert type(l) in (tuple,list)
         if len(l) != len(self.attributes):
-            print ("Warning: line %d contains wrong " + \
-                   "number of values") % self.lineno
+            print ("Warning: line %d contains %i " + \
+                   "values but it should contain %i values") \
+                % (self.lineno, len(l), len(self.attributes))
             return 
 
         datum = []
