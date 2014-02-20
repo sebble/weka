@@ -30,7 +30,7 @@ DEFAULT_WEKA_JAR_PATH = '/usr/share/java/weka.jar:/usr/share/java/libsvm.jar'
 
 BP = os.path.dirname(os.path.abspath(__file__))
 CP = os.environ.get('WEKA_JAR_PATH', DEFAULT_WEKA_JAR_PATH)
-for _cp in CP.split(':'):
+for _cp in CP.split(os.pathsep):
     assert os.path.isfile(_cp), ("Weka JAR file %s not found. Ensure the " + \
         "file is installed or update your environment's WEKA_JAR_PATH to " + \
         "only include valid locations.") % (_cp,)
@@ -283,7 +283,7 @@ class Classifier(object):
                 # Create new model file.
                 cmd = "java -cp %(CP)s %(classifier_name)s -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\" %(ckargs)s" % args
             if verbose: print cmd
-            p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
+            p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=sys.platform != "win32")
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
             stdout_str = stdout.read()
             stderr_str = stderr.read()
