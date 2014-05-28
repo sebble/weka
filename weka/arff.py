@@ -220,10 +220,11 @@ class ArffFile(object):
             return
         elif self.attribute_types[name] in NUMERIC_TYPES:
             at = self.attribute_types[name]
-            if at == TYPE_INTEGER:
-                return int(index)
-            else:
-                return Decimal(str(index))
+## note: predicted type not always integer for actual type integer
+#            if at == TYPE_INTEGER:
+#                return int(index)
+#            else:
+            return Decimal(str(index))
         else:
             assert self.attribute_types[name] == TYPE_NOMINAL
             cls_index, cls_value = index.split(':')
