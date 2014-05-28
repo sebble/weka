@@ -12,7 +12,7 @@ __version__ = '.'.join(map(str, VERSION))
 
 from subprocess import Popen, PIPE
 from collections import namedtuple
-import cPickle as pickle
+import pickle as pickle
 import gzip
 import math
 import os
@@ -23,8 +23,8 @@ import sys
 import tempfile
 import unittest
 
-import arff
-from arff import SPARSE, DENSE, Num, Nom, Int, Str
+from . import arff
+from .arff import SPARSE, DENSE, Num, Nom, Int, Str
 
 DEFAULT_WEKA_JAR_PATH = '/usr/share/java/weka.jar:/usr/share/java/libsvm.jar'
 
@@ -119,7 +119,7 @@ for _name in WEKA_CLASSIFIERS:
         else:
             _ckargs[_arg_name] = _arg
     _func = _Helper(name=_name, ckargs=_ckargs)
-    exec '%s = _func' % _proper_name
+    exec('%s = _func' % _proper_name)
 
 # These can be trained incrementally.
 # http://weka.sourceforge.net/doc/weka/classifiers/UpdateableClassifier.html
@@ -150,7 +150,7 @@ def get_weka_accuracy(arff_fn, arff_test_fn, cls):
     assert cls in WEKA_CLASSIFIERS, "Unknown Weka classifier: %s" % (cls,)
     cmd = "java -cp /usr/share/java/weka.jar:/usr/share/java/libsvm.jar " + \
         "%(cls)s -t \"%(arff_fn)s\" -T \"%(arff_test_fn)s\"" % locals()
-    print cmd
+    print(cmd)
     output = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True).communicate()[0]
     try:
         acc = float(WEKA_TEST_ACCURACY_REGEX.findall(output)[0])
@@ -159,9 +159,9 @@ def get_weka_accuracy(arff_fn, arff_test_fn, cls):
         return 0
     except TypeError:
         return 0
-    except Exception, e:
-        print '!'*80
-        print "Unexpected Error: %s" % e
+    except Exception as e:
+        print('!'*80)
+        print("Unexpected Error: %s" % e)
         return 0
 
 class TrainingError(Exception):
@@ -211,7 +211,7 @@ class Classifier(object):
     def _get_ckargs_str(self):
         ckargs = []
         if self.ckargs:
-            for k,v in self.ckargs.iteritems():
+            for k,v in self.ckargs.items():
                 if not k.startswith('-'):
                     k = '-'+k
                 if v is None:
@@ -233,7 +233,7 @@ class Classifier(object):
         try:
             
             # Validate training data.
-            if isinstance(training_data, basestring):
+            if isinstance(training_data, str):
                 assert os.path.isfile(training_data)
                 training_fn = training_data
             else:
@@ -246,7 +246,7 @@ class Classifier(object):
                 
             # Validate testing data.
             if testing_data:
-                if isinstance(testing_data, basestring):
+                if isinstance(testing_data, str):
                     assert os.path.isfile(testing_data)
                     testing_fn = testing_data
                 else:
@@ -282,18 +282,18 @@ class Classifier(object):
             else:
                 # Create new model file.
                 cmd = "java -cp %(CP)s %(classifier_name)s -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\" %(ckargs)s" % args
-            if verbose: print cmd
+            if verbose: print(cmd)
             p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=sys.platform != "win32")
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
             stdout_str = stdout.read()
             stderr_str = stderr.read()
             if verbose:
-                print 'stdout:'
-                print stdout_str
-                print 'stderr:'
-                print stderr_str
+                print('stdout:')
+                print(stdout_str)
+                print('stderr:')
+                print(stderr_str)
             if stderr_str:
-                raise TrainingError, stderr_str
+                raise TrainingError(stderr_str)
             
             # Save schema.
             if not self.schema:
@@ -329,7 +329,7 @@ class Classifier(object):
         try:
             
             # Validate query data.
-            if isinstance(query_data, basestring):
+            if isinstance(query_data, str):
                 assert os.path.isfile(query_data)
                 query_fn = query_data
             else:
@@ -362,18 +362,18 @@ class Classifier(object):
             )
             cmd = "java -cp %(CP)s %(classifier_name)s -p 0 %(distribution)s -l \"%(model_fn)s\" -T \"%(query_fn)s\"" % args
             if verbose:
-                print cmd
+                print(cmd)
             p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
             stdout_str = stdout.read()
             stderr_str = stderr.read()
             if verbose:
-                print 'stdout:'
-                print stdout_str
-                print 'stderr:'
-                print stderr_str
+                print('stdout:')
+                print(stdout_str)
+                print('stderr:')
+                print(stderr_str)
             if stderr_str:
-                raise PredictionError, stderr_str
+                raise PredictionError(stderr_str)
             
             if stdout_str:
                 # inst#     actual  predicted error prediction
@@ -388,7 +388,7 @@ class Classifier(object):
 #                assert query_variables, \
 #                    "There must be at least one query variable in the query."
                 if verbose:
-                    print 'query_variables:',query_variables
+                    print('query_variables:',query_variables)
                 header = 'predicted'.split(',')
                 # sample line:     1        1:?       4:36   +   1
                 
@@ -447,7 +447,7 @@ class Classifier(object):
                         class_index = int(class_index)
                         if distribution:
                             # Convert list of probabilities into a hash linking the prob to the associated class value.
-                            prob = dict(zip(query.attribute_data[query.attributes[-1]], map(float, prob.replace('*','').split(','))))
+                            prob = dict(list(zip(query.attribute_data[query.attributes[-1]], list(map(float, prob.replace('*','').split(','))))))
                         else:
                             prob = float(prob)
                         class_label = query.attribute_data[query.attributes[-1]][class_index-1]
@@ -489,8 +489,8 @@ class Classifier(object):
         for result in self.predict(test_data, verbose=verbose):
             i += 1
             if verbose:
-                print i,result
-            row = data_itr.next()
+                print(i,result)
+            row = next(data_itr)
             total += 1
             correct += result.predicted == result.actual
         return correct/float(total)

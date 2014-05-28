@@ -38,7 +38,7 @@ import copy
 import unittest
 import tempfile
 from decimal import Decimal
-from StringIO import StringIO
+from io import StringIO
 
 MISSING = '?'
 
@@ -137,7 +137,7 @@ def wrap_value(v):
         return v
     if v == MISSING:
         return Str(v)
-    if isinstance(v, basestring):
+    if isinstance(v, str):
         return Str(v)
     try:
         return Num(v)
@@ -236,9 +236,9 @@ class ArffFile(object):
     
     def __iter__(self):
         for d in self.data:
-            named = dict(zip(
+            named = dict(list(zip(
                 [re.sub('^[\'\"]|[\'\"]$', '', _) for _ in self.attributes],
-                d))
+                d)))
             assert len(d) == len(self.attributes)
             assert len(d) == len(named)
             yield named
@@ -351,8 +351,7 @@ class ArffFile(object):
                 elif at == TYPE_NOMINAL:
                     line.append(e)
                 else:
-                    raise Exception, \
-                        "Type " + at + " not supported for writing!"
+                    raise Exception("Type " + at + " not supported for writing!")
             s = ','.join(map(str, line))
             return s
         elif format == SPARSE:
@@ -360,8 +359,8 @@ class ArffFile(object):
             
             # Convert flat row into dictionary.
             if isinstance(d, (list, tuple)):
-                d = dict(zip(self.attributes, d))
-                for k in d.iterkeys():
+                d = dict(list(zip(self.attributes, d)))
+                for k in d.keys():
                     at = self.attribute_types.get(k)
                     if isinstance(d[k], Value):
                         continue
@@ -376,7 +375,7 @@ class ArffFile(object):
                     elif at == TYPE_NOMINAL:
                         d[k] = Nom(d[k])
                     else:
-                        raise Exception, 'Unknown type: %s' % at
+                        raise Exception('Unknown type: %s' % at)
                     
             for i, name in enumerate(self.attributes):
                 v = d.get(name)
@@ -392,7 +391,7 @@ class ArffFile(object):
                     v = v.value
                     
                 if v != MISSING and self.attribute_types[name] == TYPE_NOMINAL\
-                and str(v) not in map(str, self.attribute_data[name]):
+                and str(v) not in list(map(str, self.attribute_data[name])):
 #                    print 'Skipping nominal attribute with unregistered value.'
 #                    print 'Nominal attribute %s is set to "%s" but only allows %s.' % (name, v, ', '.join(map(str, self.attribute_data[name])))
 #                    print [type(_) for _ in ([v]+list(self.attribute_data[name]))]
@@ -407,7 +406,7 @@ class ArffFile(object):
                 return
             return '{' + (', '.join(line)) + '}'
         else:
-            raise Exception, 'Uknown format: %s' % (format,)
+            raise Exception('Uknown format: %s' % (format,))
 
     def write_attributes(self, fout=None):
         close = False
@@ -417,18 +416,18 @@ class ArffFile(object):
         for a in self.attributes:
             at = self.attribute_types[a]
             if at == TYPE_INTEGER:
-                print>>fout, "@attribute " + self.esc(a) + " integer"
+                print("@attribute " + self.esc(a) + " integer", file=fout)
             elif at in (TYPE_NUMERIC, TYPE_REAL):
-                print>>fout, "@attribute " + self.esc(a) + " numeric"
+                print("@attribute " + self.esc(a) + " numeric", file=fout)
             elif at == TYPE_STRING:
-                print>>fout, "@attribute " + self.esc(a) + " string"
+                print("@attribute " + self.esc(a) + " string", file=fout)
             elif at == TYPE_NOMINAL:
                 nom_vals = [_ for _ in self.attribute_data[a] if _ != MISSING]
                 nom_vals = sorted(nom_vals)
-                print>>fout, "@attribute " + self.esc(a) + \
-                    " {" + ','.join(map(str, nom_vals)) + "}"
+                print("@attribute " + self.esc(a) + \
+                    " {" + ','.join(map(str, nom_vals)) + "}", file=fout)
             else:
-                raise Exception, "Type " + at + " not supported for writing!"
+                raise Exception("Type " + at + " not supported for writing!")
         if isinstance(fout, StringIO) and close:
             return fout.getvalue()
 
@@ -449,15 +448,15 @@ class ArffFile(object):
             close = True
             fout = StringIO()
         if not data_only:
-            print>>fout, '% ' + re.sub("\n", "\n% ", '\n'.join(self.comment))
-            print>>fout, "@relation " + self.relation
+            print('% ' + re.sub("\n", "\n% ", '\n'.join(self.comment)), file=fout)
+            print("@relation " + self.relation, file=fout)
             self.write_attributes(fout=fout)
         if not schema_only:
-            print>>fout, "@data"
+            print("@data", file=fout)
             for d in self.data:
                 line_str = self.write_line(d, format=format)
                 if line_str:
-                    print>>fout, line_str
+                    print(line_str, file=fout)
         if isinstance(fout, StringIO) and close:
             return fout.getvalue()
 
@@ -521,10 +520,10 @@ class ArffFile(object):
             values = [s.strip () for s in atype[1:-1].split(',')]
             self.define_attribute(name, TYPE_NOMINAL, values)
         else:
-            print "Unsupported type " + atype + " for attribute " + name + "."
+            print("Unsupported type " + atype + " for attribute " + name + ".")
 
     def _parse_data(self, l):
-        if isinstance(l, basestring):
+        if isinstance(l, str):
             l = l.strip()
             if l.startswith('{'):
                 assert l.endswith('}'), 'Malformed sparse data line: %s' % (l,)
@@ -564,9 +563,9 @@ class ArffFile(object):
             # Otherwise, confirm list.
             assert type(l) in (tuple,list)
         if len(l) != len(self.attributes):
-            print ("Warning: line %d contains %i " + \
+            print(("Warning: line %d contains %i " + \
                    "values but it should contain %i values") \
-                % (self.lineno, len(l), len(self.attributes))
+                % (self.lineno, len(l), len(self.attributes)))
             return 
 
         datum = []
@@ -584,33 +583,32 @@ class ArffFile(object):
                 if v in self.attribute_data[n]:
                     datum.append(v)
                 else:
-                    raise Exception, \
-                        'Incorrect value %s for nominal attribute %s' % (v, n)
+                    raise Exception('Incorrect value %s for nominal attribute %s' % (v, n))
         if self.fout:
             # If we're streaming out data, then don't even bother saving it to
             # memory and just flush it out to disk instead.
             line_str = self.write_line(datum)
             if line_str:
-                print>>self.fout, line_str
+                print(line_str, file=self.fout)
             self.fout.flush()
         else:
             self.data.append(datum)
 
     def __print_warning(self, msg):
-        print ('Warning (line %d): ' % self.lineno) + msg
+        print(('Warning (line %d): ' % self.lineno) + msg)
 
     def dump(self):
         """Print an overview of the ARFF file."""
-        print "Relation " + self.relation
-        print "  With attributes"
+        print("Relation " + self.relation)
+        print("  With attributes")
         for n in self.attributes:
             if self.attribute_types[n] != TYPE_NOMINAL:
-                print "    %s of type %s" % (n, self.attribute_types[n])
+                print("    %s of type %s" % (n, self.attribute_types[n]))
             else:
-                print ("    " + n + " of type nominal with values " +
-                       ', '.join(self.attribute_data[n]))
+                print(("    " + n + " of type nominal with values " +
+                       ', '.join(self.attribute_data[n])))
         for d in self.data:
-            print d
+            print(d)
     
     def set_class(self, name):
         assert name in self.attributes
@@ -629,7 +627,7 @@ class ArffFile(object):
         if isinstance(line, dict):
             # Validate line types against schema.
             if update_schema:
-                for k, v in line.items():
+                for k, v in list(line.items()):
                     prior_type = self.attribute_types.get(k,
                         v.c_type if isinstance(v, Value) else None)
                     if not isinstance(v, Value):
@@ -696,7 +694,7 @@ class ArffFile(object):
 #                    print '-'*80
                     line_str = self.write_line(line)
                     if line_str:
-                        print>>self.fout, line_str
+                        print(line_str, file=self.fout)
                 else:
                     self.data.append(line)
         else:
