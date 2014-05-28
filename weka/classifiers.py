@@ -148,8 +148,12 @@ PredictionResult = namedtuple('PredictionResult', ['actual', 'predicted', 'proba
 
 def get_weka_accuracy(arff_fn, arff_test_fn, cls):
     assert cls in WEKA_CLASSIFIERS, "Unknown Weka classifier: %s" % (cls,)
-    cmd = "java -cp /usr/share/java/weka.jar:/usr/share/java/libsvm.jar " + \
-        "%(cls)s -t \"%(arff_fn)s\" -T \"%(arff_test_fn)s\"" % locals()
+    if arff_test_fn is None:
+        cmd = "java -cp /usr/share/java/weka.jar:/usr/share/java/libsvm.jar " + \
+            "%(cls)s -t \"%(arff_fn)s\"" % locals()
+    else:
+        cmd = "java -cp /usr/share/java/weka.jar:/usr/share/java/libsvm.jar " + \
+            "%(cls)s -t \"%(arff_fn)s\" -T \"%(arff_test_fn)s\"" % locals()
     print(cmd)
     output = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True).communicate()[0]
     try:
@@ -255,9 +259,9 @@ class Classifier(object):
                     os.close(fd)
                     open(testing_fn,'w').write(testing_data.write())
                     clean_testing = True
-            else:
-                testing_fn = training_fn
-            assert testing_fn
+            #else:
+            #    testing_fn = training_fn
+            #assert testing_fn
                 
             # Validate model file.
             fd, model_fn = tempfile.mkstemp()
@@ -278,10 +282,17 @@ class Classifier(object):
             )
             if self._model_data:
                 # Load existing model.
-                cmd = "java -cp %(CP)s %(classifier_name)s -l \"%(model_fn)s\" -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\"" % args
+                if testing_fn is None:
+                    cmd = "java -cp %(CP)s %(classifier_name)s -l \"%(model_fn)s\" -t \"%(training_fn)s\" -d \"%(model_fn)s\"" % args
+                else:
+                    cmd = "java -cp %(CP)s %(classifier_name)s -l \"%(model_fn)s\" -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\"" % args
             else:
                 # Create new model file.
-                cmd = "java -cp %(CP)s %(classifier_name)s -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\" %(ckargs)s" % args
+                if testing_fn is None:
+                    cmd = "java -cp %(CP)s %(classifier_name)s -t \"%(training_fn)s\" -d \"%(model_fn)s\" %(ckargs)s" % args
+                else:
+                    cmd = "java -cp %(CP)s %(classifier_name)s -t \"%(training_fn)s\" -T \"%(testing_fn)s\" -d \"%(model_fn)s\" %(ckargs)s" % args
+
             if verbose: print(cmd)
             p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=sys.platform != "win32")
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
