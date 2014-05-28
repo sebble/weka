@@ -286,7 +286,7 @@ class Classifier(object):
             p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=sys.platform != "win32")
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
             stdout_str = str(stdout.read())
-            stderr_str = str(stderr.read())
+            stderr_str = stderr.read()
             if verbose:
                 print('stdout:')
                 print(stdout_str)
@@ -366,7 +366,7 @@ class Classifier(object):
             p = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
             stdin, stdout, stderr = (p.stdin, p.stdout, p.stderr)
             stdout_str = str(stdout.read())
-            stderr_str = str(stderr.read())
+            stderr_str = stderr.read()
             if verbose:
                 print('stdout:')
                 print(stdout_str)
